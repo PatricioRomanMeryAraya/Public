@@ -1,7 +1,10 @@
+"""
+Anexo I: Código Python para la Comparación de Enfoques de Formulación de Expectativas Inflacionarias
 
-
-
-
+Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
+licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
+https://creativecommons.org/licenses/by-nc/4.0/
+"""
 
 import pandas as pd
 import numpy as np
