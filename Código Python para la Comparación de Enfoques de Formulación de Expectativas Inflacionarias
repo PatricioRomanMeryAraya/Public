@@ -1,0 +1,389 @@
+
+
+
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from scipy import stats
+import pandas_datareader.data as web
+import warnings
+from itertools import product
+
+# Ignorar advertencias para una salida más limpia
+warnings.filterwarnings('ignore')
+
+# Para reproducibilidad
+np.random.seed(42)
+plt.style.use('ggplot')
+
+# ============================================================================
+# 1. Carga y preparación de datos reales
+# ============================================================================
+def cargar_datos_fred(series_id='CPIAUCSL', start='2010-01-01', end='2024-12-31'):
+    ``''''
+    Obtiene datos reales de FRED para una serie específica.
+    
+    Parámetros:
+    - series_id (str): ID de la serie en FRED (por defecto, 'CPIAUCSL' para el Índice de Precios al Consumidor).
+    - start (str): Fecha de inicio en formato 'YYYY-MM-DD'.
+    - end (str): Fecha de fin en formato 'YYYY-MM-DD'.
+    
+    Retorna:
+    - data (pd.DataFrame): DataFrame con la serie temporal de inflación interanual (%).
+    ``''''
+    try:
+        raw_data = web.DataReader(series_id, 'fred', start, end)
+        # Calcular la inflación interanual (%)
+        inflation = raw_data.pct_change(periods=12) * 100
+        inflation = inflation.dropna()
+        inflation.columns = ['valor']
+        return inflation
+    except Exception as e:
+        print(f''Error al cargar datos de FRED: {e}'')
+        return pd.DataFrame()
+
+# Cargar datos reales de inflación
+data = cargar_datos_fred()
+
+# Verificar que se hayan cargado datos
+if data.empty:
+    raise ValueError(''No se pudieron cargar datos de FRED. Verifica el ID de la serie y las fechas.'')
+
+# ============================================================================
+# 2. División entrenamiento-prueba
+# ============================================================================
+test_size = 12  # 12 meses para prueba (1 año)
+train_data = data.iloc[:-test_size]
+test_data = data.iloc[-test_size:]
+
+# ============================================================================
+# 3. Modelo de Expectativas Adaptativas con alpha y mu
+# ============================================================================
+def modelo_adaptativo(alpha, mu, train, test):
+    ``''''
+    Modelo adaptativo de expectativas con parámetros alpha y mu.
+    
+    Especificación:
+    E_{t}[\pi_{t+1}] = E_{t}[\pi_{t}] + alpha * (pi_t - E_{t}[\pi_{t}]) + mu * (pi_{t-1} - pi_{t-2})
+    
+    Parámetros:
+    - alpha (float): Parámetro de ajuste (0 < alpha < 1).
+    - mu (float): Parámetro de momentum.
+    - train (pd.DataFrame): Datos de entrenamiento.
+    - test (pd.DataFrame): Datos de prueba.
+    
+    Retorna:
+    - mae (float): Mean Absolute Error sobre el test.
+    - residuos (pd.Series): Residuos de las predicciones.
+    - preds_series (pd.Series): Series de predicciones.
+    ``''''
+    # 1) Entrenamiento con toda la parte de entrenamiento
+    # Inicializar expectativas
+    E_prev = train.iloc[0, 0]  # E_{0}[pi_{1}]
+    if len(train) >= 2:
+        pi_prev = train.iloc[0, 0]  # pi_{t-1}
+    else:
+        pi_prev = train.iloc[0, 0]
+    
+    if len(train) >= 3:
+        pi_prev_prev = train.iloc[0, 0]  # pi_{t-2}
+    else:
+        pi_prev_prev = train.iloc[0, 0]
+    
+    for i in range(len(train)):
+        pi_t = train.iloc[i, 0]
+        if i == 0:
+            # No actualización en el primer punto
+            E_prev = pi_t  # Asumir E_{0}[pi_{1}] = pi_0
+        else:
+            pi_t_minus_1 = pi_prev
+            pi_t_minus_2 = pi_prev_prev
+            # Actualizar expectativas según la fórmula
+            E_prev = E_prev + alpha * (pi_t - E_prev) + mu * (pi_t_minus_1 - pi_t_minus_2)
+            # Actualizar valores previos
+            pi_prev_prev = pi_prev
+            pi_prev = pi_t
+    
+    # 2) Predicción iterativa sobre el test
+    preds = []
+    for t in range(len(test)):
+        pi_t = test.iloc[t, 0]
+        if t == 0:
+            pi_t_minus_1 = pi_prev
+            pi_t_minus_2 = pi_prev_prev
+        else:
+            pi_t_minus_1 = test.iloc[t-1, 0]
+            pi_t_minus_2 = test.iloc[t-2, 0] if t >=2 else pi_prev_prev
+        
+        # Calcular E_{t}[pi_{t+1}]
+        E_current = E_prev + alpha * (pi_t - E_prev) + mu * (pi_t_minus_1 - pi_t_minus_2)
+        preds.append(E_prev)
+        
+        # Actualizar expectativas y valores previos
+        E_prev = E_current
+        pi_prev_prev = pi_t_minus_1
+        pi_prev = pi_t
+    
+    # 3) Cálculo de residuos y MAE
+    preds_series = pd.Series(preds, index=test.index)
+    residuos = test['valor'] - preds_series
+    mae = mean_absolute_error(test['valor'], preds_series)
+    
+    return mae, residuos, preds_series
+
+# ============================================================================
+# 4. Modelo Racional SARIMA (con corrección de invertibilidad)
+# ============================================================================
+def modelo_sarima(train, test, p=1, d=1, q=1, P=1, D=1, Q=1, s=12):
+    ``''''
+    Ajusta un modelo SARIMAX con los parámetros indicados y pronostica 'len(test)' pasos.
+    Devuelve el MAE, la serie de residuos, el modelo ajustado y las predicciones.
+    
+    En caso de error durante el ajuste (por ejemplo, problemas de invertibilidad),
+    se devuelve MAE = infinito.
+    
+    Parámetros:
+    - train (pd.DataFrame): Datos de entrenamiento.
+    - test (pd.DataFrame): Datos de prueba.
+    - p, d, q, P, D, Q, s: Parámetros del modelo SARIMA.
+    
+    Retorna:
+    - mae (float): Mean Absolute Error sobre el test.
+    - residuos (pd.Series): Residuos de las predicciones.
+    - model_fit (SARIMAXResults): Modelo ajustado.
+    - predictions (pd.Series): Series de predicciones.
+    ``''''
+    try:
+        model = SARIMAX(train,
+                        order=(p, d, q),
+                        seasonal_order=(P, D, Q, s),
+                        trend='n',
+                        enforce_invertibility=True,
+                        enforce_stationarity=False)
+        
+        model_fit = model.fit(disp=False, maxiter=200)
+        
+        # Pronóstico para la longitud del test
+        predictions = model_fit.forecast(steps=len(test))
+        
+        # Cálculo de residuos (test - pred)
+        residuos = pd.Series(test.values.flatten() - predictions.values, index=test.index)
+        
+        mae = mean_absolute_error(test, predictions)
+        return mae, residuos, model_fit, predictions
+        
+    except Exception as e:
+        print(f''Error en SARIMA: {str(e)}'')
+        return np.inf, pd.Series(dtype=float), None, None
+
+# ============================================================================
+# 5. Optimización de parámetros para modelos adaptativos (alpha y mu)
+# ============================================================================
+def optimizar_parametros(train, test, alpha_range=np.linspace(0.1, 0.9, 15), mu_range=np.linspace(-0.5, 0.5, 11)):
+    ``''''
+    Realiza una búsqueda de grid sobre alpha y mu para el modelo adaptativo.
+    Devuelve la mejor combinación de alpha y mu que minimiza el MAE.
+    
+    Parámetros:
+    - train (pd.DataFrame): Datos de entrenamiento.
+    - test (pd.DataFrame): Datos de prueba.
+    - alpha_range (array-like): Rango de valores de alpha a probar.
+    - mu_range (array-like): Rango de valores de mu a probar.
+    
+    Retorna:
+    - best_alpha (float): Mejor valor de alpha encontrado.
+    - best_mu (float): Mejor valor de mu encontrado.
+    - best_mae (float): MAE correspondiente a la mejor combinación.
+    - resultados (list): Lista de tuplas (alpha, mu, MAE).
+    ``''''
+    best_alpha = 0
+    best_mu = 0
+    best_mae = np.inf
+    resultados = []
+    
+    for alpha, mu in product(alpha_range, mu_range):
+        try:
+            current_mae, _, _ = modelo_adaptativo(alpha, mu, train, test)
+            resultados.append((alpha, mu, current_mae))
+            
+            if current_mae < best_mae:
+                best_alpha, best_mu, best_mae = alpha, mu, current_mae
+                
+        except Exception as e:
+            print(f''Error en alpha={alpha:.3f}, mu={mu:.3f}: {str(e)}'')
+    
+    return best_alpha, best_mu, best_mae, resultados
+
+# ============================================================================
+# 6. Evaluación de modelos
+# ============================================================================
+def evaluar_modelos():
+    ``''''
+    - Optimiza alpha y mu en el modelo adaptativo usando train/test.
+    - Ajusta el modelo adaptativo con la alpha y mu óptimos.
+    - Ajusta el modelo SARIMA con parámetros predefinidos.
+    - Define un modelo de Anclaje: pronostica siempre el último valor de train.
+    
+    Devuelve un diccionario con las métricas y las series de residuos/predicciones 
+    de cada modelo.
+    ``''''
+    # 1) Optimizar modelo adaptativo
+    best_alpha, best_mu, best_mae, resultados_alpha_mu = optimizar_parametros(train_data, test_data)
+    print(f''Mejor alpha para modelo adaptativo: {best_alpha:.3f}'')
+    print(f''Mejor mu para modelo adaptativo: {best_mu:.3f}'')
+    print(f''MAE del modelo adaptativo optimizado: {best_mae:.3f}'')
+    
+    mae_adapt, residuos_adapt, preds_adapt = modelo_adaptativo(best_alpha, best_mu, train_data, test_data)
+    
+    # 2) Modelo SARIMA (parámetros fijos; ajustar si se desea)
+    mae_sarima, residuos_sarima, modelo_sarima_fit, preds_sarima = modelo_sarima(train_data, test_data)
+    
+    if modelo_sarima_fit is not None:
+        print(f''SARIMA MAE: {mae_sarima:.3f} con parámetros: {modelo_sarima_fit.model_orders}'')
+    else:
+        print(''Modelo SARIMA no pudo ser ajustado correctamente.'')
+    
+    # 3) Modelo de Anclaje (referencia)
+    last_train_value = train_data.iloc[-1, 0]  # último valor del train
+    predictions_anclaje = pd.Series([last_train_value]*len(test_data), index=test_data.index)
+    mae_anclaje = mean_absolute_error(test_data['valor'], predictions_anclaje)
+    residuos_anclaje = test_data['valor'] - predictions_anclaje
+    
+    print(f''Modelo de Anclaje MAE: {mae_anclaje:.3f}'')
+    
+    return {
+        'Adaptativas': {
+            'MAE': mae_adapt,
+            'Residuos': residuos_adapt,
+            'Predicciones': preds_adapt,
+            'Parámetro α': best_alpha,
+            'Parámetro μ': best_mu
+        },
+        'Racionales': {
+            'MAE': mae_sarima,
+            'Residuos': residuos_sarima,
+            'Modelo': modelo_sarima_fit,
+            'Predicciones': preds_sarima
+        },
+        'Anclaje': {
+            'MAE': mae_anclaje,
+            'Residuos': residuos_anclaje,
+            'Predicciones': predictions_anclaje
+        }
+    }
+
+# ============================================================================
+# 7. Visualización de resultados
+# ============================================================================
+def plot_resultados(resultados, test_data):
+    ``''''
+    Muestra dos gráficos:
+      - Gráfico superior: valores reales de test y predicciones 
+        (SARIMA, Adaptativo y Anclaje).
+      - Gráfico inferior: residuos de SARIMA, Adaptativo y Anclaje.
+    
+    Parámetros:
+    - resultados (dict): Diccionario con los resultados de cada modelo.
+    - test_data (pd.DataFrame): Datos de prueba reales.
+    ``''''
+    fig, ax = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    
+    # --- Predicciones vs Real ---
+    ax[0].plot(test_data['valor'], label='Real', marker='o', color='black')
+    
+    # SARIMA
+    if resultados['Racionales']['Modelo'] is not None and resultados['Racionales']['Predicciones'] is not None:
+        ax[0].plot(resultados['Racionales']['Predicciones'], label='SARIMA', linestyle='--', color='blue')
+    
+    # Adaptativo
+    ax[0].plot(resultados['Adaptativas']['Predicciones'], label='Adaptativo', linestyle=':', color='green')
+    
+    # Anclaje
+    ax[0].plot(resultados['Anclaje']['Predicciones'], label='Anclaje', linestyle='-.', color='red')
+    
+    ax[0].set_title('Comparación de Predicciones en la Ventana de Test')
+    ax[0].legend()
+    
+    # --- Residuos ---
+    ax[1].plot(resultados['Racionales']['Residuos'], label='SARIMA', color='blue')
+    ax[1].plot(resultados['Adaptativas']['Residuos'], label='Adaptativo', color='green')
+    ax[1].plot(resultados['Anclaje']['Residuos'], label='Anclaje', color='red', linestyle=':')
+    
+    ax[1].axhline(0, color='k', linestyle='--')
+    ax[1].set_title('Análisis de Residuos (SARIMA, Adaptativo y Anclaje)')
+    ax[1].legend()
+    
+    plt.tight_layout()
+    plt.show()
+
+# ============================================================================
+# 8. Métricas completas con intervalos de confianza aproximados
+# ============================================================================
+def calcular_metricas_completas(resultados):
+    ``''''
+    Calcula MAE, RMSE, Bias y Error SD para cada modelo, y un intervalo de confianza
+    (aproximado) para el MAE usando la distribución t.
+    
+    Devuelve un DataFrame con cada métrica por fila.
+    
+    Parámetros:
+    - resultados (dict): Diccionario con los resultados de cada modelo.
+    
+    Retorna:
+    - metrics_df (pd.DataFrame): DataFrame con las métricas calculadas.
+    ``''''
+    metricas = []
+    
+    for nombre, modelo in resultados.items():
+        residuos = modelo['Residuos']
+        mae = np.mean(np.abs(residuos))
+        
+        # Intervalo de confianza (aprox) para el MAE usando los residuos absolutos
+        ci = (np.nan, np.nan)  # Inicializar
+        try:
+            # grados de libertad: len(residuos) - 1
+            ci = stats.t.interval(0.95, len(residuos)-1, loc=mae, scale=stats.sem(np.abs(residuos)))
+        except:
+            pass
+        
+        rmse = np.sqrt(mean_squared_error(np.zeros_like(residuos), residuos))
+        bias = np.mean(residuos)
+        error_sd = np.std(residuos)
+        
+        metricas.append({
+            'Modelo': nombre,
+            'MAE': f''{mae:.3f}'',
+            'MAE IC 95%': f''({ci[0]:.3f}, {ci[1]:.3f})'' if all(np.isfinite(ci)) else ``N/A'',
+            'RMSE': f''{rmse:.3f}'',
+            'Bias': f''{bias:.3f}'',
+            'Error SD': f''{error_sd:.3f}'',
+            'Parámetro α': modelo.get('Parámetro α', 'N/A'),
+            'Parámetro μ': modelo.get('Parámetro μ', 'N/A')
+        })
+    
+    return pd.DataFrame(metricas)
+
+# ============================================================================
+# 9. Ejecución principal
+# ============================================================================
+if __name__ == ``__main__'':
+    # 1) Evaluación de los tres modelos
+    resultados = evaluar_modelos()
+    
+    # 2) Mostrar métricas completas
+    print(''\nResultados Finales (Métricas):'')
+    df_metricas = calcular_metricas_completas(resultados)
+    print(df_metricas.to_string(index=False))
+    
+    # 3) Visualización gráfica de predicciones y residuos
+    plot_resultados(resultados, test_data)
+    
+    # 4) Diagnósticos del modelo SARIMA
+    if resultados['Racionales']['Modelo'] is not None:
+        print(''\nDiagnósticos del Modelo SARIMA:'')
+        resultados['Racionales']['Modelo'].plot_diagnostics(figsize=(14, 10))
+        plt.show()
