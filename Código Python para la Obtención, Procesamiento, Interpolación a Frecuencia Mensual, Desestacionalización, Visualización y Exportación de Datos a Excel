@@ -1,0 +1,429 @@
+"""
+Anexo II: Código Python para la Obtención, Procesamiento, Interpolación a Frecuencia Mensual,
+Desestacionalización, Visualización y Exportación de Datos a Excel
+
+Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
+licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
+https://creativecommons.org/licenses/by-nc/4.0/
+"""
+
+import sys
+import logging
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import torch
+import yfinance as yf
+import pandas_datareader.data as web
+import arviz as az
+import warnings
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.statespace.structural import UnobservedComponents
+import itertools
+
+warnings.filterwarnings(''ignore'')
+az.rcParams['plot.max_subplots'] = 350
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter(''[%(asctime)s] %(levelname)s - %(message)s'')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+np.random.seed(42)
+torch.manual_seed(42)
+
+device = torch.device(''cuda'' if torch.cuda.is_available() else ``cpu'')
+if torch.cuda.is_available():
+    logger.info(f''CUDA disponible. Usando GPU: {torch.cuda.get_device_name(0)}'')
+else:
+    logger.info(''CUDA no disponible. Usando CPU.'')
+
+start_date = '2000-01-01'
+end_date   = '2024-12-31'
+
+# ============================================================================
+# 1. Descarga de datos (FRED / Yahoo)
+# ============================================================================
+
+def fetch_fred_data(series: str, start_date: str, end_date: str) -> pd.Series:
+    ``''''
+    Obtiene una serie temporal desde la API de FRED, dada la 'series key'.
+    ``''''
+    try:
+        data = web.DataReader(series, 'fred', start_date, end_date).dropna()
+        ser = data.squeeze().astype(float).dropna()
+        ser.name = series
+        logger.info(f''Datos FRED para {series}: {len(ser)} observaciones.'')
+        return ser
+    except web.DataReaderError as e:
+        logger.error(f''Error al obtener la serie {series} de FRED: {e}'')
+        return None
+    except Exception as e:
+        logger.error(f''Error inesperado al obtener la serie {series}: {e}'')
+        return None
+
+def fetch_yahoo_data(ticker: str, start_date: str, end_date: str) -> pd.Series:
+    ``''''
+    Obtiene datos de Yahoo Finance para un ticker específico.
+    Retorna la columna 'Adj Close' como Series.
+    ``''''
+    try:
+        data = yf.download(ticker, start=start_date, end=end_date, interval='1mo')
+        if data.empty:
+            logger.warning(f''No se encontraron datos para el ticker {ticker}.'')
+            return None
+        ser = data['Adj Close'].dropna()  # Aseguramos que sea una serie unidimensional
+        ser.name = ticker
+        logger.info(f''Datos Yahoo para {ticker}: {len(ser)} observaciones.'')
+        return ser
+    except Exception as e:
+        logger.error(f''Error al obtener el ticker {ticker} de Yahoo Finance: {e}'')
+        return None
+
+def make_tz_naive(series: pd.Series) -> pd.Series:
+    ``''''
+    Quita la zona horaria de un índice datetime (si la tiene).
+    ``''''
+    if series.index.tz is not None:
+        series = series.tz_localize(None)
+    return series
+
+def fetch_Tipo_cambio(start_date: str, end_date: str) -> pd.Series:
+    ``''''
+    Intenta obtener una serie de tipo de cambio (EUR/USD) desde Yahoo Finance o FRED.
+    ``''''
+    tickers_yahoo = ['EURUSD=X']
+    tickers_fred  = ['DEXUSEU']
+
+    # Primero intentamos con Yahoo
+    for ticker in tickers_yahoo:
+        fx = fetch_yahoo_data(ticker, start_date, end_date)
+        if fx is not None:
+            return fx
+
+    # Si no funciona Yahoo, probamos con FRED
+    for ticker in tickers_fred:
+        fx = fetch_fred_data(ticker, start_date, end_date)
+        if fx is not None:
+            return fx
+
+    raise ValueError(''No se pudo obtener la serie de tipo de cambio.'')
+
+# ============================================================================
+# 2. Carga y preprocesamiento de datos
+# ============================================================================
+logger.info(''=== CARGANDO SERIES (EJEMPLO) ==='')
+
+inflacion = fetch_fred_data('CPIAUCSL', start_date, end_date)
+if inflacion is not None:
+    inflacion = (inflacion.pct_change() * 100).bfill()
+    inflacion = make_tz_naive(inflacion)
+    logger.info(f''Inflación (CPIAUCSL) procesada: {len(inflacion)} observaciones'')
+else:
+    raise ValueError(''No se pudo obtener la serie de inflación (CPIAUCSL).'')
+
+try:
+    Tipo_cambio = fetch_Tipo_cambio(start_date, end_date)
+    Tipo_cambio = make_tz_naive(Tipo_cambio)
+
+    if isinstance(Tipo_cambio, pd.DataFrame):
+        Tipo_cambio = Tipo_cambio.squeeze()
+    Tipo_cambio.name = ``Tipo_cambio''
+
+    logger.info(f''Tipo de Cambio obtenido: {len(Tipo_cambio)} observaciones'')
+except ValueError as ve:
+    logger.error(ve)
+    raise
+
+Tasa_interes = fetch_fred_data('FEDFUNDS', start_date, end_date)
+if Tasa_interes is not None:
+    Tasa_interes = make_tz_naive(Tasa_interes)
+    if isinstance(Tasa_interes, pd.DataFrame):
+        Tasa_interes = Tasa_interes.squeeze()
+    Tasa_interes.name = ``Tasa_interes''
+    logger.info(f''Interest Rate (FEDFUNDS) obtenida: {len(Tasa_interes)} observaciones'')
+else:
+    raise ValueError(''No se pudo obtener la serie de tasa de interés (FEDFUNDS).'')
+
+gdp_real = fetch_fred_data('GDPC1', start_date, end_date)
+gdp_potential = fetch_fred_data('GDPPOT', start_date, end_date)
+if gdp_real is not None and gdp_potential is not None:
+    gdp_real_monthly = gdp_real.resample('ME').ffill()
+    gdp_potential_monthly = gdp_potential.resample('ME').ffill()
+    Brecha_producto = (gdp_real_monthly - gdp_potential_monthly) / gdp_potential_monthly * 100
+    Brecha_producto = Brecha_producto.squeeze()
+    Brecha_producto = make_tz_naive(Brecha_producto)
+    if isinstance(Brecha_producto, pd.DataFrame):
+        Brecha_producto = Brecha_producto.squeeze()
+    Brecha_producto.name = ``Brecha_producto''
+    logger.info(f''Output Gap calculada: {len(Brecha_producto)} observaciones'')
+else:
+    raise ValueError(''No se pudo obtener la serie Brecha_producto'')
+
+# Corrección: Obtener SP500 desde Yahoo Finance usando el ticker '^GSPC'
+sp500 = fetch_yahoo_data('^GSPC', start_date, end_date)
+if sp500 is not None:
+    sp500 = make_tz_naive(sp500)
+    sp500 = sp500.resample('ME').last()
+    if isinstance(sp500, pd.DataFrame):
+        sp500 = sp500.squeeze()
+    sp500.name = ``SP500''
+    logger.info(f''S&P 500 obtenido como proxy de S_t: {len(sp500)} observaciones'')
+else:
+    raise ValueError(''No se pudo obtener la serie SP500 de Yahoo Finance.'')
+
+try:
+    bond_yield = fetch_fred_data('DGS10', start_date, end_date)
+    if bond_yield is not None:
+        bond_yield = make_tz_naive(bond_yield)
+        bond_yield = bond_yield.resample('ME').last()
+        if isinstance(bond_yield, pd.DataFrame):
+            bond_yield = bond_yield.squeeze()
+        bond_yield.name = ``bond_yield''
+        logger.info(f''Rendimiento del Tesoro a 10 años (DGS10) obtenido: {len(bond_yield)} observaciones'')
+    else:
+        raise ValueError(''No se pudo obtener la serie DGS10 de FRED.'')
+except ValueError as ve:
+    logger.error(ve)
+    raise
+
+if sp500 is not None and bond_yield is not None:
+    sp500_ret = np.log(sp500).diff().dropna()
+    bond_yield_ret = bond_yield.diff().dropna()
+    common_index_rp = sp500_ret.index.intersection(bond_yield_ret.index)
+    R_t = sp500_ret.loc[common_index_rp] - bond_yield_ret.loc[common_index_rp]
+    R_t.name = 'R_t'
+    logger.info(f''Prima de Riesgo (R_t) calculada: {len(R_t)} observaciones'')
+else:
+    raise ValueError(''No se pudo calcular la Prima de Riesgo (R_t).'')
+
+
+# ============================================================================
+# 3. Interpolación en el espacio de estados
+# ============================================================================
+def state_space_interpolation(series: pd.Series) -> pd.Series:
+    model = UnobservedComponents(series, 'local level')
+    try:
+        results = model.fit(disp=False)
+    except Exception as e:
+        logger.error(f''Error al ajustar UnobservedComponents para {series.name}: {e}'')
+        return series  # Retornar la serie original si falla la interpolación
+
+    smoothed_state = results.smoothed_state
+
+    # Verificar la forma de smoothed_state y ajustar si es necesario
+    if smoothed_state.shape[0] == len(series):
+        state_series = smoothed_state[:, 0]
+    elif smoothed_state.shape[1] == len(series):
+        state_series = smoothed_state[0, :]
+    else:
+        # Intentar transponer si la forma no coincide
+        smoothed_state = smoothed_state.T
+        if smoothed_state.shape[0] == len(series):
+            state_series = smoothed_state[:, 0]
+        else:
+            logger.error(f''Forma inesperada de smoothed_state para {series.name}: {smoothed_state.shape}'')
+            return series  # Retornar la serie original si la forma sigue siendo incorrecta
+
+    logger.info(f''Serie {series.name}: smoothed_state shape: {smoothed_state.shape}'')
+    return pd.Series(state_series, index=series.index, name=series.name)
+
+def state_space_interpolation_df(df: pd.DataFrame) -> pd.DataFrame:
+    df_new = df.copy()
+    for col in df.columns:
+        logger.info(f''Interpolando columna (estado local): {col}'')
+        interpolated = state_space_interpolation(df[col])
+        if interpolated is not None:
+            df_new[col] = interpolated
+        else:
+            logger.warning(f''No se pudo interpolar la columna: {col}'')
+    return df_new
+
+logger.info(''=== ORGANIZANDO SERIES AL MES Y APLICANDO INTERPOLACIÓN ==='')
+
+# Asegurarse de que todas las series tengan una frecuencia regular antes de resample
+def ensure_monthly_frequency(series: pd.Series) -> pd.Series:
+    if not series.index.freq:
+        series = series.asfreq('M', method='ffill')
+    return series
+
+inflacion = ensure_monthly_frequency(inflacion).resample('ME').last()
+Tipo_cambio = ensure_monthly_frequency(Tipo_cambio).resample('ME').last()
+Tasa_interes = ensure_monthly_frequency(Tasa_interes).resample('ME').last()
+Brecha_producto = ensure_monthly_frequency(Brecha_producto).resample('ME').last()
+R_t = ensure_monthly_frequency(R_t).resample('ME').last()
+
+data = pd.concat([
+    inflacion.rename('inflacion'),
+    Tipo_cambio.rename('Tipo_cambio'),
+    Tasa_interes.rename('Tasa_interes'),
+    Brecha_producto.rename('Brecha_producto'),
+    sp500.rename('SP500'),
+    R_t.rename('R_t')
+], axis=1, join='inner')
+
+data = state_space_interpolation_df(data)
+data = data.dropna()
+logger.info(f''Tamaño final de data: {data.shape}'')
+
+# ============================================================================
+# 4. Desestacionalización SARIMA
+# ============================================================================
+def auto_sarima_desest(series: pd.Series,
+                       p_range=(0, 3),
+                       d_range=(0, 2),
+                       q_range=(0, 3),
+                       P_range=(0, 2),
+                       D_range=(0, 1),
+                       Q_range=(0, 2),
+                       s=12,
+                       criterion='aic',
+                       enforce_stationarity=False,
+                       enforce_invertibility=False):
+    series = series.dropna()
+    best_score = float('inf')
+    best_order = None
+    best_seasonal_order = None
+    best_model = None
+
+    for p, d, q in itertools.product(range(p_range[0], p_range[1] + 1),
+                                     range(d_range[0], d_range[1] + 1),
+                                     range(q_range[0], q_range[1] + 1)):
+        for P, D, Q in itertools.product(range(P_range[0], P_range[1] + 1),
+                                         range(D_range[0], D_range[1] + 1),
+                                         range(Q_range[0], Q_range[1] + 1)):
+            try:
+                order = (p, d, q)
+                seasonal_order = (P, D, Q, s)
+                model = SARIMAX(series,
+                                order=order,
+                                seasonal_order=seasonal_order,
+                                enforce_stationarity=enforce_stationarity,
+                                enforce_invertibility=enforce_invertibility)
+                results = model.fit(disp=False)
+                score = results.aic if criterion.lower() == 'aic' else results.bic
+                if score < best_score:
+                    best_score = score
+                    best_order = order
+                    best_seasonal_order = seasonal_order
+                    best_model = results
+            except:
+                continue
+
+    logger.info(f''Mejor orden (p,d,q): {best_order}'')
+    logger.info(f''Mejor orden estacional (P,D,Q,s): {best_seasonal_order}'')
+    logger.info(f''Mejor {criterion.upper()} encontrado: {best_score:.2f}'')
+    return best_order, best_seasonal_order, best_model
+
+def deseasonalize_sarima(series: pd.Series,
+                         auto_select=False,
+                         p_range=(0, 3),
+                         d_range=(0, 2),
+                         q_range=(0, 3),
+                         P_range=(0, 2),
+                         D_range=(0, 1),
+                         Q_range=(0, 2),
+                         s=12,
+                         criterion='aic',
+                         order=(1, 0, 1),
+                         seasonal_order=(1, 1, 1, 12)):
+    try:
+        if auto_select:
+            best_order, best_seasonal_order, best_model = auto_sarima_desest(
+                series,
+                p_range=p_range,
+                d_range=d_range,
+                q_range=q_range,
+                P_range=P_range,
+                D_range=D_range,
+                Q_range=Q_range,
+                s=s,
+                criterion=criterion,
+                enforce_stationarity=False,
+                enforce_invertibility=False
+            )
+            residuals = best_model.resid
+        else:
+            model = SARIMAX(series,
+                            order=order,
+                            seasonal_order=seasonal_order,
+                            enforce_stationarity=False,
+                            enforce_invertibility=False)
+            results = model.fit(disp=False)
+            residuals = results.resid
+        return residuals
+    except Exception as e:
+        logger.warning(f''Error al ajustar SARIMA (serie: {series.name}): {e}'')
+        return series
+
+logger.info(''=== DESESTACIONALIZANDO SERIES ==='')
+data_desest = pd.DataFrame(index=data.index)
+for column in data.columns:
+    logger.info(f''Desestacionalizando SARIMA -> {column}'')
+    data_desest[column] = deseasonalize_sarima(
+        data[column],
+        auto_select=True,
+        p_range=(0, 3),
+        d_range=(0, 2),
+        q_range=(0, 3),
+        P_range=(0, 2),
+        D_range=(0, 1),
+        Q_range=(0, 2),
+        s=12,
+        criterion='aic'
+    )
+logger.info(''Desestacionalización completada.'')
+
+# ============================================================================
+# 5. Visualización
+# ============================================================================
+def plot_original_series(data: pd.DataFrame) -> None:
+    fig, axs = plt.subplots(3, 2, figsize=(12, 10))
+    fig.suptitle('Series Originales (Interpoladas)')
+    cols = list(data.columns)
+    for i, col in enumerate(cols):
+        ax = axs[i // 2, i % 2]
+        ax.plot(data.index, data[col], label=col, color='b')
+        ax.set_title(col)
+        ax.legend(loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+def plot_desest_series(data_desest: pd.DataFrame) -> None:
+    fig, axs = plt.subplots(3, 2, figsize=(12, 10))
+    fig.suptitle('Series Desestacionalizadas (Residuales SARIMA)')
+    cols = list(data_desest.columns)
+    for i, col in enumerate(cols):
+        ax = axs[i // 2, i % 2]
+        ax.plot(data_desest.index, data_desest[col], label=f''{col}_desest'', color='g')
+        ax.set_title(f''{col} Desest.'')
+        ax.legend(loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+plot_original_series(data)
+plot_desest_series(data_desest)
+
+# ============================================================================
+# 6. Exportar DataFrames a un archivo de Excel
+# ============================================================================
+logger.info(''=== EXPORTANDO DATAFRAMES A EXCEL ==='')
+
+# Crear DataFrame de inputs (series originales)
+inputs_df = data.copy()
+inputs_df.name = ``Inputs''
+
+# Crear DataFrame de outputs (series desestacionalizadas)
+outputs_df = data_desest.copy()
+outputs_df.name = ``Outputs''
+
+# Exportar a un archivo de Excel con dos hojas
+excel_filename = 'economic_data.xlsx'
+with pd.ExcelWriter(excel_filename) as writer:
+    inputs_df.to_excel(writer, sheet_name='Inputs')
+    outputs_df.to_excel(writer, sheet_name='Outputs')
+
+logger.info(f''Datos exportados a '{excel_filename}' con hojas 'Inputs' y 'Outputs'.'')
