@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-@author: meryp
+@author: Patricio_Mery
 """
 
 import sec_edgar_downloader
