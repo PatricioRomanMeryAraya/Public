@@ -7,8 +7,8 @@ import sec_edgar_downloader
 
 dl = sec_edgar_downloader.Downloader("TuNombreDeCompañia", "tu.email@dominio.com")
 
-ticker = "TSLA"
+ticker = "TSLA" # puede ser cualquier ticket
 
-dl.get("10-K", ticker, limit=None)  # Los descargara todos los disponibles que son 15
+dl.get("10-K", ticker, limit=None)  # Los descargara los reportes 10-K, para TSLA los disponibles que son 15
 
-print("Descarga completada. Los archivos están en la carpeta './sec-edgar-filings'.")
+print("Descarga completada. Los archivos están en la carpeta 'C:/users/name_usuario/sec-edgar-filings")
