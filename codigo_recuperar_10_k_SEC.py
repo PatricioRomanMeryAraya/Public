@@ -16,7 +16,7 @@ import sec_edgar_downloader
 
 TICKER = "TSLA"
 DOC_TYPE = "10-K"
-USER_AGENT_NAME = "TuNombreDeCompañia"
+USER_AGENT_NAME = "TuNombre"
 USER_AGENT_EMAIL = "tu.email@dominio.com"
 
 print(" Descargando reportes 10-K desde EDGAR...")
