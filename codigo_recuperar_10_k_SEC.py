@@ -16,19 +16,19 @@ import pandas as pd
 import re
 import time
 
-CIK = "0001318605"  # CIK de TSLA
+CIK = "0001318605"  # Ej: TSLA
 FORM_TYPE = "10-K"
-USER_AGENT = "Tu_nombre (tu_email)"
+USER_AGENT = "tu_nombre (tu_email)"
 HEADERS = {"User-Agent": USER_AGENT}
 BASE_DIR = os.path.abspath("sec-edgar-tsla")
 os.makedirs(BASE_DIR, exist_ok=True)
 
 PALABRAS_CLAVE = [
-    "balance",
-    "statements of operations",
-    "statements of income",
-    "statements of cash flows",
-    "statements of stockholders",
+    "consolidated balance",
+    "consolidated statements of operations",
+    "consolidated statements of income",
+    "consolidated statements of cash flows",
+    "consolidated statements of stockholders",
 ]
 
 def tiene_palabra_clave(texto):
@@ -81,13 +81,13 @@ def descargar_y_extraer_tablas(url, carpeta_salida):
 
 # ======= EJECUCIÓN =======
 urls = get_filings_urls(CIK, FORM_TYPE, count=5)
-print(f" Se encontraron {len(urls)} URLs de 10-K para CIK.")
+print(f" Se encontraron {len(urls)} URLs de 10-K para TSLA.")
 
 total_tablas = 0
 for url in urls:
     print(f"\n Procesando: {url}")
     extraidas = descargar_y_extraer_tablas(url, BASE_DIR)
-    print(f"  Tablas extraídas: {extraidas}")
+    print(f" Tablas extraídas: {extraidas}")
     total_tablas += extraidas
     time.sleep(1.5)
 
