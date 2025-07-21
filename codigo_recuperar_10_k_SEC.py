@@ -10,99 +10,86 @@ SEC_Downloader al ejecutarlo se crearan las tablas
 """
 
 import os
-import re
-import pandas as pd
+import requests
 from bs4 import BeautifulSoup
-import sec_edgar_downloader
+import pandas as pd
+import re
+import time
 
-TICKER = "TSLA"
-DOC_TYPE = "10-K"
-USER_AGENT_NAME = "TuNombreDeCompañia"
-USER_AGENT_EMAIL = "tu.email@dominio.com"
+CIK = "0001318605"  # CIK de TSLA
+FORM_TYPE = "10-K"
+USER_AGENT = "Tu_nombre (tu_email)"
+HEADERS = {"User-Agent": USER_AGENT}
+BASE_DIR = os.path.abspath("sec-edgar-tsla")
+os.makedirs(BASE_DIR, exist_ok=True)
 
-print(" Descargando reportes 10-K desde EDGAR...")
-dl = sec_edgar_downloader.Downloader(USER_AGENT_NAME, USER_AGENT_EMAIL)
-dl.get(DOC_TYPE, TICKER, limit=None)
-print(" Descarga completada.")
-
-BASE_FOLDER = os.path.join(os.path.expanduser("~"), "sec-edgar-filings", TICKER, DOC_TYPE)
-OUTPUT_FOLDER = os.path.join(BASE_FOLDER, "extracted_tables_csv")
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-TITULOS_CLAVE = [
-    "consolidated balance sheets",
-    "consolidated statements of operations",
-    "consolidated statements of income",
-    "consolidated statements of cash flows",
-    "consolidated statements of stockholders",
+PALABRAS_CLAVE = [
+    "balance",
+    "statements of operations",
+    "statements of income",
+    "statements of cash flows",
+    "statements of stockholders",
 ]
 
-def normalizar_texto(text):
-    return re.sub(r'\s+', ' ', text).strip().lower()
+def tiene_palabra_clave(texto):
+    texto = texto.lower()
+    return any(palabra in texto for palabra in PALABRAS_CLAVE)
 
-def contiene_palabra_clave(text):
-    norm = normalizar_texto(text)
-    return any(titulo in norm for titulo in TITULOS_CLAVE)
+def get_filings_urls(cik, form_type, count=5):
+    url = f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json"
+    resp = requests.get(url, headers=HEADERS)
+    data = resp.json()
+    filings = data['filings']['recent']
+    urls = []
+    for i, f_type in enumerate(filings['form']):
+        if f_type == form_type:
+            accession = filings['accessionNumber'][i].replace("-", "")
+            doc_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{filings['primaryDocument'][i]}"
+            urls.append(doc_url)
+            if len(urls) >= count:
+                break
+    return urls
 
-def extraer_tablas_relevantes(file_path):
-    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-        soup = BeautifulSoup(f, 'lxml')
+def descargar_y_extraer_tablas(url, carpeta_salida):
+    html = requests.get(url, headers=HEADERS).text
+    soup = BeautifulSoup(html, 'lxml')
+    file_name = os.path.basename(url)
+    filing_id = file_name.split('.')[0]
+    os.makedirs(carpeta_salida, exist_ok=True)
 
-    tablas_relevantes = []
-    elementos = soup.find_all(['p', 'div', 'center', 'b', 'strong', 'table'])
-    titulo_actual = None
+    tablas = soup.find_all("table")
+    tablas_guardadas = 0
 
-    for el in elementos:
-        if el.name != 'table':
-            texto = el.get_text(separator=' ', strip=True)
-            if contiene_palabra_clave(texto):
-                titulo_actual = texto
-        else:
-            if titulo_actual:
-                filas = []
-                for row in el.find_all('tr'):
-                    celdas = row.find_all(['td', 'th'])
-                    fila = [c.get_text(strip=True) for c in celdas]
-                    if fila:
-                        filas.append(fila)
-                if len(filas) >= 2:
-                    df = pd.DataFrame(filas)
-                    tablas_relevantes.append((titulo_actual, df))
-                titulo_actual = None
-    return tablas_relevantes
+    for i, tabla in enumerate(tablas):
+        texto_tabla = tabla.get_text(separator=" ", strip=True).lower()
+        if tiene_palabra_clave(texto_tabla):
+            filas = []
+            for fila in tabla.find_all("tr"):
+                celdas = fila.find_all(["td", "th"])
+                contenido_fila = [celda.get_text(strip=True) for celda in celdas]
+                if contenido_fila:
+                    filas.append(contenido_fila)
+            if len(filas) >= 2:
+                df = pd.DataFrame(filas)
+                nombre_csv = f"{filing_id}_tabla_{i+1}.csv"
+                ruta_csv = os.path.join(carpeta_salida, nombre_csv)
+                df.to_csv(ruta_csv, index=False)
+                print(f" Tabla guardada: {nombre_csv}")
+                tablas_guardadas += 1
 
-print(" Buscando archivos HTML con tablas clave...")
+    return tablas_guardadas
 
-txt_files_found = 0
-tablas_totales = 0
+# ======= EJECUCIÓN =======
+urls = get_filings_urls(CIK, FORM_TYPE, count=5)
+print(f" Se encontraron {len(urls)} URLs de 10-K para CIK.")
 
-for root, dirs, files in os.walk(BASE_FOLDER):
-    for file in files:
-        if file.endswith(".html") and "primary-document" in file:
-            txt_files_found += 1
-            file_path = os.path.join(root, file)
-            print(f"\n Procesando: {file}")
+total_tablas = 0
+for url in urls:
+    print(f"\n Procesando: {url}")
+    extraidas = descargar_y_extraer_tablas(url, BASE_DIR)
+    print(f"  Tablas extraídas: {extraidas}")
+    total_tablas += extraidas
+    time.sleep(1.5)
 
-            try:
-                tablas = extraer_tablas_relevantes(file_path)
-                if not tablas:
-                    print(" No se encontraron tablas financieras clave.")
-                    continue
-
-                base_name = os.path.splitext(file)[0]
-
-                for idx, (titulo, df) in enumerate(tablas):
-                    nombre_limpio = re.sub(r'[^a-zA-Z0-9_]', '', titulo.replace(' ', '_').lower())
-                    csv_name = f'{base_name}_{nombre_limpio}_table_{idx+1}.csv'
-                    csv_path = os.path.join(OUTPUT_FOLDER, csv_name)
-                    df.to_csv(csv_path, index=False)
-                    print(f" Tabla clave guardada: {titulo}")
-                    tablas_totales += 1
-
-            except Exception as e:
-                print(f" Error: {e}")
-
-print(f"\n Proceso finalizado.")
-print(f" Archivos procesados: {txt_files_found}")
-print(f" Tablas clave extraídas: {tablas_totales}")
-print(f" Guardadas en: {OUTPUT_FOLDER}")
+print(f"\n Total de tablas clave extraídas: {total_tablas}")
+print(f" Guardadas en: {BASE_DIR}")
