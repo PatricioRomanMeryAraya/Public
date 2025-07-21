@@ -1,6 +1,8 @@
 
 """
-@author: Patricio_Mery
+Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
+licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
+https://creativecommons.org/licenses/by-nc/4.0/
 
 Copia el Script a la carpeta en la carpeta 'C:/users/name_usuario/sec-edgar-filings' al 
 ejecutarlo se crearan las tablas
