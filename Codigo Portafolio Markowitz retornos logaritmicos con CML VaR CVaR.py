@@ -22,7 +22,7 @@ TICKERS = ['ORCL', 'QCOM', 'META', 'CSCO', 'INTC']  # ajusta si quieres otros
 
 # Fechas para descargar datos
 START_DATE = '2015-06-01'
-END_DATE   = '2025-07-01'
+END_DATE   = '2025-07-31'
 
 # Parámetros de trading
 TRADING_DAYS = 252
@@ -607,6 +607,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
