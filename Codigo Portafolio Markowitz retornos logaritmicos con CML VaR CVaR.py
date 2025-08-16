@@ -1,22 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Script mejorado para análisis de portafolio con Markowitz, CML y tres métodos de riesgo:
-- VaR/CVaR Paramétrico-Normal
-- VaR/CVaR Histórico
-- VaR/CVaR Cornish–Fisher (ajuste por asimetría y curtosis)
+Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
+licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
+https://creativecommons.org/licenses/by-nc/4.0/
 
-Actualización solicitada:
-- La construcción de la FRONTERA EFICIENTE y la visualización principal (Panel 1)
-  se adaptan al estilo de la versión de referencia: el rango de retornos objetivo
-  se define entre 0.5 * min(media anual de activos) y 1.5 * max(media anual de activos),
-  con 200 puntos y constraints explícitas en la optimización.
-- Etiquetas de ejes y columnas siguen la convención "Retorno Esperado Anual Logarítmico (%)".
-- Se mantiene la CML (línea del mercado de capitales) y el portafolio tangente.
+Copia el Script en la carpeta 'C:/users/name_usuario/sec-edgar-filings' que es la que utiliza
+SEC_Downloader al ejecutarlo se crearan las tablas
 
-Notas:
-- Tasa libre tomada desde ^FVX (5Y) sin fallback sintético si así se configura.
-- VaR/CVaR con horizonte configurable (por defecto 1 día).
-- Regularización leve de la covarianza para robustez numérica.
 """
 
 import numpy as np
@@ -285,7 +275,7 @@ def main():
     df_efficient_frontier['Retorno Esperado Anual Logarítmico (%)'] = frontier_returns
     cols = ['Riesgo Anual (%)', 'Retorno Esperado Anual Logarítmico (%)'] + TICKERS
     df_efficient_frontier = df_efficient_frontier[cols]
-    print(f"   ✓ {len(frontier_risks)} puntos factibles en la frontera")
+    print(f"   [ok] {len(frontier_risks)} puntos factibles en la frontera")
 
     # 6) Tasa libre y portafolio tangente
     print("\n6. Calculando portafolio tangente y CML...")
@@ -309,13 +299,13 @@ def main():
         method='SLSQP'
     )
     if not tangente_result.success:
-        print("   ✗ Optimización del portafolio tangente falló")
+        print("   [x] Optimización del portafolio tangente falló")
         return
     tangente_weights = tangente_result.x
     tangente_return  = float(mean_returns_annual @ tangente_weights) * 100.0
     tangente_risk    = np.sqrt(portfolio_variance_annual(tangente_weights, cov_matrix_annual)) * 100.0
     sharpe_ratio     = (tangente_return/100.0 - risk_free_rate) / (tangente_risk/100.0)
-    print(f"   ✓ Tangente → Riesgo: {tangente_risk:.2f}%, Retorno: {tangente_return:.2f}% | Sharpe: {sharpe_ratio:.3f}")
+    print(f"   [ok] Tangente → Riesgo: {tangente_risk:.2f}%, Retorno: {tangente_return:.2f}% | Sharpe: {sharpe_ratio:.3f}")
 
     # CML (sobre el panel principal)
     cml_risks   = np.linspace(0, max(frontier_risks) * 1.2, 100)
@@ -609,9 +599,9 @@ def main():
                         })
             pd.DataFrame(rows_95).to_excel(writer, sheet_name="VaR_CVaR_95", index=False)
 
-        print("   ✓ Archivo exportado exitosamente")
+        print("   [ok] Archivo exportado exitosamente")
     except Exception as e:
-        print(f"   ✗ Error al exportar: {e}")
+        print(f"   [x] Error al exportar: {e}")
 
     print("\n" + "=" * 80)
     print("ANÁLISIS COMPLETADO")
