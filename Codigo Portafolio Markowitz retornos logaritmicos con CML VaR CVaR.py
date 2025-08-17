@@ -4,7 +4,7 @@ Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condi
 licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
 https://creativecommons.org/licenses/by-nc/4.0/
 
-Descargo de responsabilidad: Este script es solo para fines académicos.
+Descargo de responsabilidad: Este script es de uso exclusivo para fines académicos.
 """
 
 import numpy as np
@@ -607,6 +607,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
