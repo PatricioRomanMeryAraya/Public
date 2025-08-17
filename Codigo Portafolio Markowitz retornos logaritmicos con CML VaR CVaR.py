@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 
 # ====================== CONFIGURACIÓN ======================
 # Universo de activos
-TICKERS = ['ORCL', 'QCOM', 'META', 'CSCO', 'INTC']  # ajusta si quieres otros
+TICKERS = ['ORCL', 'QCOM', 'META', 'CRM', 'INTC']  # ajusta si quieres otros
 
 # Fechas para descargar datos
 START_DATE = '2015-06-01'
@@ -607,6 +607,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
