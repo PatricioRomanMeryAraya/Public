@@ -4,20 +4,7 @@ Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condi
 licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
 https://creativecommons.org/licenses/by-nc/4.0/
 
-Copia el Script en la carpeta 'C:/users/name_usuario/sec-edgar-filings' que es la que utiliza
-SEC_Downloader al ejecutarlo se crearan las tablas
-
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
-licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
-https://creativecommons.org/licenses/by-nc/4.0/
-
-Copia el Script en la carpeta 'C:/users/name_usuario/sec-edgar-filings' que es la que utiliza
-SEC_Downloader al ejecutarlo se crearan las tablas
-
+Disclaimer: El código es de uso exclusivo para fines académicos.
 """
 
 import numpy as np
@@ -701,5 +688,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
