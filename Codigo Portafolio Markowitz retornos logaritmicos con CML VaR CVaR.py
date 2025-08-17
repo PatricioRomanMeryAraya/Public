@@ -4,7 +4,20 @@ Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condi
 licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
 https://creativecommons.org/licenses/by-nc/4.0/
 
-Descargo de responsabilidad: Este script es de uso exclusivo para fines académicos.
+Copia el Script en la carpeta 'C:/users/name_usuario/sec-edgar-filings' que es la que utiliza
+SEC_Downloader al ejecutarlo se crearan las tablas
+
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
+licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
+https://creativecommons.org/licenses/by-nc/4.0/
+
+Copia el Script en la carpeta 'C:/users/name_usuario/sec-edgar-filings' que es la que utiliza
+SEC_Downloader al ejecutarlo se crearan las tablas
+
 """
 
 import numpy as np
@@ -161,6 +174,44 @@ def var_cvar_cornish_fisher(returns: np.ndarray, weights: np.ndarray, confidence
         cvar = -(mu_h - sig_h * (norm.pdf(z_cf) / alpha)) if alpha > 0 else var
         out.append({"Confidence Level": round(conf, 4), "VaR": var * 100.0, "CVaR": cvar * 100.0})
     return pd.DataFrame(out)
+
+# Función para calcular VaR/CVaR al 95% para un portafolio específico
+def calculate_var_cvar_95(returns: np.ndarray, weights: np.ndarray, horizon_days: int = 1) -> dict:
+    """
+    Calcula VaR y CVaR al 95% de confianza para un portafolio usando los tres métodos.
+    Retorna un diccionario con los resultados.
+    """
+    result = {}
+    confidence_level = 0.95
+    
+    # Normal
+    try:
+        df_normal = var_cvar_param_normal(returns, weights, [confidence_level], horizon_days)
+        result['VaR_Normal_95'] = df_normal.iloc[0]['VaR']
+        result['CVaR_Normal_95'] = df_normal.iloc[0]['CVaR']
+    except:
+        result['VaR_Normal_95'] = np.nan
+        result['CVaR_Normal_95'] = np.nan
+    
+    # Histórico
+    try:
+        df_hist = var_cvar_historico(returns, weights, [confidence_level], horizon_days)
+        result['VaR_Historico_95'] = df_hist.iloc[0]['VaR']
+        result['CVaR_Historico_95'] = df_hist.iloc[0]['CVaR']
+    except:
+        result['VaR_Historico_95'] = np.nan
+        result['CVaR_Historico_95'] = np.nan
+    
+    # Cornish-Fisher
+    try:
+        df_cf = var_cvar_cornish_fisher(returns, weights, [confidence_level], horizon_days)
+        result['VaR_CornishFisher_95'] = df_cf.iloc[0]['VaR']
+        result['CVaR_CornishFisher_95'] = df_cf.iloc[0]['CVaR']
+    except:
+        result['VaR_CornishFisher_95'] = np.nan
+        result['CVaR_CornishFisher_95'] = np.nan
+    
+    return result
 
 # ====================== PROCESO PRINCIPAL ======================
 
@@ -361,6 +412,45 @@ def main():
             except Exception as e:
                 print(f"   {name}: (no disponible) -> {e}")
 
+    # 7.5) NUEVO: Calcular VaR y CVaR para TODOS los portafolios de la frontera eficiente
+    print("\n7.5. Calculando VaR y CVaR para todos los portafolios de la frontera eficiente...")
+    frontier_var_cvar = []
+    
+    for i, w in enumerate(frontier_weights):
+        if i % 20 == 0:  # Mostrar progreso cada 20 portafolios
+            print(f"   Procesando portafolio {i+1}/{len(frontier_weights)}...")
+        
+        # Calcular VaR y CVaR al 95% para este portafolio
+        risk_metrics = calculate_var_cvar_95(log_returns.values, w, VAR_HORIZON_DAYS)
+        
+        # Agregar información del portafolio
+        portfolio_info = {
+            'Portafolio_ID': i + 1,
+            'Riesgo Anual (%)': frontier_risks[i],
+            'Retorno Esperado Anual (%)': frontier_returns[i]
+        }
+        
+        # Agregar los pesos
+        for j, ticker in enumerate(TICKERS):
+            portfolio_info[f'Peso_{ticker}'] = w[j]
+        
+        # Combinar toda la información
+        portfolio_info.update(risk_metrics)
+        frontier_var_cvar.append(portfolio_info)
+    
+    # Crear DataFrame con todos los resultados
+    df_frontier_var_cvar = pd.DataFrame(frontier_var_cvar)
+    
+    # Reordenar columnas para mejor visualización
+    cols_order = ['Portafolio_ID', 'Riesgo Anual (%)', 'Retorno Esperado Anual (%)']
+    cols_order += [f'Peso_{ticker}' for ticker in TICKERS]
+    cols_order += ['VaR_Normal_95', 'CVaR_Normal_95', 
+                   'VaR_Historico_95', 'CVaR_Historico_95',
+                   'VaR_CornishFisher_95', 'CVaR_CornishFisher_95']
+    df_frontier_var_cvar = df_frontier_var_cvar[cols_order]
+    
+    print(f"   [ok] VaR/CVaR calculado para {len(frontier_var_cvar)} portafolios de la frontera")
+
     # 8) Visualización
     print("\n8. Generando gráficos...")
 
@@ -545,6 +635,9 @@ def main():
             # Hoja: Frontera Eficiente (formato versión referencia)
             df_efficient_frontier.to_excel(writer, sheet_name="Frontera Eficiente", index=False)
 
+            # NUEVA HOJA: VaR/CVaR para toda la Frontera Eficiente
+            df_frontier_var_cvar.to_excel(writer, sheet_name="VaR_CVaR_Frontera_Eficiente", index=False)
+
             # Hojas: VaR/CVaR por método y portafolio
             for method, dct in var_cvar_results.items():
                 for name, dfv in dct.items():
@@ -598,6 +691,7 @@ def main():
             pd.DataFrame(rows_95).to_excel(writer, sheet_name="VaR_CVaR_95", index=False)
 
         print("   [ok] Archivo exportado exitosamente")
+        print(f"   [ok] Nueva hoja 'VaR_CVaR_Frontera_Eficiente' agregada con {len(frontier_var_cvar)} portafolios")
     except Exception as e:
         print(f"   [x] Error al exportar: {e}")
 
@@ -607,9 +701,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
 
 
