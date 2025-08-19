@@ -1,15 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-META: clasificación alcista/bajista/lateral (2015-06-01 a 2025-07-31)
-- Hurst (DFA) en ventana móvil de 252 días
-- Drift (pendiente OLS del log-precio) y Z = (a_t / sigma_r)*sqrt(252)
-- Reglas:
-    H>=0.5 y Z>=+0.5  -> Alcista
-    H>=0.5 y Z<=-0.5  -> Bajista
-    H<=0.5 o |Z|<0.5  -> Lateral
+Autor: Patricio Román Mery Araya. Se autoriza su uso bajo los términos y condiciones de la 
+licencia Creative Commons Atribución-No Comercial 4.0 Internacional (CC BY-NC 4.0): 
+https://creativecommons.org/licenses/by-nc/4.0/
 
-Requisitos:
-    pip install yfinance pandas numpy matplotlib
+Disclaimer: El código es de uso exclusivo para fines académicos.
 """
 
 from __future__ import annotations
@@ -313,3 +308,4 @@ if __name__ == "__main__":
 
     # Visualización con leyenda clara y alto contraste
     plot_results(px, res)
+
